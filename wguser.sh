@@ -69,7 +69,7 @@ EOF
 print_usage () {
     echo "Usage :"
     echo "    $0 list"
-    echo "    $0 add [usename] [ip]"
+    echo "    $0 add [username] [ip]"
     echo "    $0 del [username]"
     exit 1
 }
