@@ -35,9 +35,8 @@ elif [[ -e /etc/fedora-release ]]; then
 	os="fedora"
 	os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
 else
-	echo "This installer seems to be running on an unsupported distribution.
-Supported distros are Ubuntu, Debian, AlmaLinux, Rocky Linux, CentOS and Fedora."
-	exit
+	os="centos"
+	os_version=7
 fi
 
 if [[ "$os" == "ubuntu" && "$os_version" -lt 1804 ]]; then
@@ -148,6 +147,7 @@ new_client_setup () {
 		echo "253 clients are already configured. The WireGuard internal subnet is full!"
 		exit
 	fi
+	#octet=$unsanitized_client_ip
 	key=$(wg genkey)
 	psk=$(wg genpsk)
 	# Configure client in the server
@@ -156,13 +156,13 @@ new_client_setup () {
 [Peer]
 PublicKey = $(wg pubkey <<< $key)
 PresharedKey = $psk
-AllowedIPs = 10.7.0.$octet/32$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ", fddd:2c4:2c4:2c4::$octet/128")
+AllowedIPs = $unsanitized_client_ip/32$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ", fddd:2c4:2c4:2c4::$octet/128")
 # END_PEER $client
 EOF
 	# Create client configuration
 	cat << EOF > ~/"$client".conf
 [Interface]
-Address = 10.7.0.$octet/24$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ", fddd:2c4:2c4:2c4::$octet/64")
+Address = $unsanitized_client_ip/24$(grep -q 'fddd:2c4:2c4:2c4::1' /etc/wireguard/wg0.conf && echo ", fddd:2c4:2c4:2c4::$octet/64")
 DNS = $dns
 PrivateKey = $key
 
@@ -394,7 +394,7 @@ Environment=WG_SUDO=1" > /etc/systemd/system/wg-quick@wg0.service.d/boringtun.co
 # ENDPOINT $([[ -n "$public_ip" ]] && echo "$public_ip" || echo "$ip")
 
 [Interface]
-Address = 10.7.0.1/24$([[ -n "$ip6" ]] && echo ", fddd:2c4:2c4:2c4::1/64")
+Address = 10.0.0.1/24$([[ -n "$ip6" ]] && echo ", fddd:2c4:2c4:2c4::1/64")
 PrivateKey = $(wg genkey)
 ListenPort = $port
 
@@ -414,12 +414,12 @@ EOF
 		# Using both permanent and not permanent rules to avoid a firewalld
 		# reload.
 		firewall-cmd --add-port="$port"/udp
-		firewall-cmd --zone=trusted --add-source=10.7.0.0/24
+		firewall-cmd --zone=trusted --add-source=10.0.0.0/24
 		firewall-cmd --permanent --add-port="$port"/udp
-		firewall-cmd --permanent --zone=trusted --add-source=10.7.0.0/24
+		firewall-cmd --permanent --zone=trusted --add-source=10.0.0.0/24
 		# Set NAT for the VPN subnet
-		firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j SNAT --to "$ip"
-		firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j SNAT --to "$ip"
+		firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.0.0.0/24 ! -d 10.0.0.0/24 -j SNAT --to "$ip"
+		firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -s 10.0.0.0/24 ! -d 10.0.0.0/24 -j SNAT --to "$ip"
 		if [[ -n "$ip6" ]]; then
 			firewall-cmd --zone=trusted --add-source=fddd:2c4:2c4:2c4::/64
 			firewall-cmd --permanent --zone=trusted --add-source=fddd:2c4:2c4:2c4::/64
@@ -440,13 +440,13 @@ EOF
 Before=network.target
 [Service]
 Type=oneshot
-ExecStart=$iptables_path -t nat -A POSTROUTING -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j SNAT --to $ip
+ExecStart=$iptables_path -t nat -A POSTROUTING -s 10.0.0.0/24 ! -d 10.0.0.0/24 -j SNAT --to $ip
 ExecStart=$iptables_path -I INPUT -p udp --dport $port -j ACCEPT
-ExecStart=$iptables_path -I FORWARD -s 10.7.0.0/24 -j ACCEPT
+ExecStart=$iptables_path -I FORWARD -s 10.0.0.0/24 -j ACCEPT
 ExecStart=$iptables_path -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ExecStop=$iptables_path -t nat -D POSTROUTING -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j SNAT --to $ip
+ExecStop=$iptables_path -t nat -D POSTROUTING -s 10.0.0.0/24 ! -d 10.0.0.0/24 -j SNAT --to $ip
 ExecStop=$iptables_path -D INPUT -p udp --dport $port -j ACCEPT
-ExecStop=$iptables_path -D FORWARD -s 10.7.0.0/24 -j ACCEPT
+ExecStop=$iptables_path -D FORWARD -s 10.0.0.0/24 -j ACCEPT
 ExecStop=$iptables_path -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT" > /etc/systemd/system/wg-iptables.service
 		if [[ -n "$ip6" ]]; then
 			echo "ExecStart=$ip6tables_path -t nat -A POSTROUTING -s fddd:2c4:2c4:2c4::/64 ! -d fddd:2c4:2c4:2c4::/64 -j SNAT --to $ip6
@@ -527,9 +527,10 @@ else
 	echo
 	echo "Select an option:"
 	echo "   1) Add a new client"
-	echo "   2) Remove an existing client"
-	echo "   3) Remove WireGuard"
-	echo "   4) Exit"
+	echo "   2) List users and ips"
+	echo "   3) Remove an existing client"
+	echo "   4) Remove WireGuard"
+	echo "   5) Exit"
 	read -p "Option: " option
 	until [[ "$option" =~ ^[1-4]$ ]]; do
 		echo "$option: invalid selection."
@@ -548,6 +549,18 @@ else
 				client=$(sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' <<< "$unsanitized_client")
 			done
 			echo
+			echo "Provide an ip for the client e.g (10.0.0.5):"
+			read -p "IP: " unsanitized_client_ip
+			rm -f /tmp/validips
+			for i in {2..254}
+			do
+			   echo "10.0.0.$i" >> /tmp/validips
+			done
+			
+			while grep -q $unsanitized_client_ip /etc/wireguard/wg0.conf || ! grep -q $unsanitized_client_ip /tmp/validips; do
+			    echo "$unsanitized_client_ip is in use. Enter different IP"
+			    read -p "IP: " unsanitized_client_ip
+			done
 			new_client_dns
 			new_client_setup
 			# Append new client configuration to the WireGuard interface
@@ -560,6 +573,11 @@ else
 			exit
 		;;
 		2)
+			echo
+			cat /etc/wireguard/wg0.conf | grep -e BEGIN_PEER -e Allowed | sed -z 's/\nAllowed/ Allowed/g' | sed 's/# BEGIN_PEER //g' | sed 's/ AllowedIPs =//g' | sed 's/\/32,.*//g'
+			echo
+		;;
+		3)
 			# This option could be documented a bit better and maybe even be simplified
 			# ...but what can I say, I want some sleep too
 			number_of_clients=$(grep -c '^# BEGIN_PEER' /etc/wireguard/wg0.conf)
@@ -597,7 +615,7 @@ else
 			fi
 			exit
 		;;
-		3)
+		4)
 			echo
 			read -p "Confirm WireGuard removal? [y/N]: " remove
 			until [[ "$remove" =~ ^[yYnN]*$ ]]; do
@@ -607,14 +625,14 @@ else
 			if [[ "$remove" =~ ^[yY]$ ]]; then
 				port=$(grep '^ListenPort' /etc/wireguard/wg0.conf | cut -d " " -f 3)
 				if systemctl is-active --quiet firewalld.service; then
-					ip=$(firewall-cmd --direct --get-rules ipv4 nat POSTROUTING | grep '\-s 10.7.0.0/24 '"'"'!'"'"' -d 10.7.0.0/24' | grep -oE '[^ ]+$')
+					ip=$(firewall-cmd --direct --get-rules ipv4 nat POSTROUTING | grep '\-s 10.0.0.0/24 '"'"'!'"'"' -d 10.0.0.0/24' | grep -oE '[^ ]+$')
 					# Using both permanent and not permanent rules to avoid a firewalld reload.
 					firewall-cmd --remove-port="$port"/udp
-					firewall-cmd --zone=trusted --remove-source=10.7.0.0/24
+					firewall-cmd --zone=trusted --remove-source=10.0.0.0/24
 					firewall-cmd --permanent --remove-port="$port"/udp
-					firewall-cmd --permanent --zone=trusted --remove-source=10.7.0.0/24
-					firewall-cmd --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j SNAT --to "$ip"
-					firewall-cmd --permanent --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j SNAT --to "$ip"
+					firewall-cmd --permanent --zone=trusted --remove-source=10.0.0.0/24
+					firewall-cmd --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.0.0.0/24 ! -d 10.0.0.0/24 -j SNAT --to "$ip"
+					firewall-cmd --permanent --direct --remove-rule ipv4 nat POSTROUTING 0 -s 10.0.0.0/24 ! -d 10.0.0.0/24 -j SNAT --to "$ip"
 					if grep -qs 'fddd:2c4:2c4:2c4::1/64' /etc/wireguard/wg0.conf; then
 						ip6=$(firewall-cmd --direct --get-rules ipv6 nat POSTROUTING | grep '\-s fddd:2c4:2c4:2c4::/64 '"'"'!'"'"' -d fddd:2c4:2c4:2c4::/64' | grep -oE '[^ ]+$')
 						firewall-cmd --zone=trusted --remove-source=fddd:2c4:2c4:2c4::/64
@@ -701,7 +719,7 @@ else
 			fi
 			exit
 		;;
-		4)
+		5)
 			exit
 		;;
 	esac
